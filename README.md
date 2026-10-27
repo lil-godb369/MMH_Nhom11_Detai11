@@ -10,7 +10,7 @@ Cài đặt giao thức trao đổi khóa Diffie-Hellman giữa hai bên trên k
 | --- | --- | --- |
 | TV1 – Trưởng nhóm |Trần Ngọc Đăng Khoa | `dh_math.py`, `dh_protocol.py`, `main.py` |
 | TV2 |Lê Thị Minh Chiến | `channel.py`, `alice.py`, `bob.py` |
-| TV3 | | `mallory.py` |
+| TV3 |Nguyễn Cao Nguyên | `mallory.py` |
 | TV4 |Trần Ngọc Tài | `dh_auth.py`, `benchmark.py` |
 
 ## 2. Ngôn ngữ và thư viện
