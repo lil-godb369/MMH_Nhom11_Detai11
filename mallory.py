@@ -4,14 +4,14 @@ Kẻ tấn công đứng giữa (MITM): Alice tưởng đang nói chuyện với
 kết nối tới Mallory. Mallory thay khóa công khai của hai bên bằng khóa của mình,
 nhờ đó có hai khóa chung (một với Alice, một với Bob), đọc và sửa được tin nhắn.
 
-Chạy riêng:  python mallory.py [--listen-port 5001] [--bob-port 5000]
+Chạy riêng: python mallory.py [--listen-port 5001] [--bob-port 5000]
 """
 
 import argparse
-import socket  # noqa: F401  (dùng khi cài đặt)
+import socket
 
-from channel import HOST, BOB_PORT, MALLORY_PORT, send_msg, recv_msg  # noqa: F401
-from dh_protocol import (  # noqa: F401
+from channel import HOST, BOB_PORT, MALLORY_PORT, send_msg, recv_msg
+from dh_protocol import (
     generate_private_key,
     compute_public_key,
     compute_shared_secret,
@@ -22,29 +22,135 @@ from dh_protocol import (  # noqa: F401
 
 
 def run_mallory(listen_port: int = MALLORY_PORT, bob_port: int = BOB_PORT) -> None:
-    """Nhận kết nối của Alice, tự kết nối tới Bob, thay khóa công khai của hai bên
-    bằng khóa của Mallory, đọc và sửa tin nhắn rồi chuyển tiếp."""
-    # TODO(TV3):
-    #   1. Mở cổng listen_port (nhớ SO_REUSEADDR), chờ Alice kết nối.
-    #   2. Nhận dh_init của Alice -> p, g, A.
-    #      Sinh m1, M1 = g^m1 mod p; khóa với Alice: k_alice = derive_aes_key(A^m1 mod p)
-    #   3. Kết nối tới (HOST, bob_port). Sinh m2, M2.
-    #      Gửi Bob dh_init với "public": M2 (giữ nguyên "signature" của Alice nếu có).
-    #   4. Nhận trả lời của Bob.
-    #      Nếu type == "error" (chế độ auth): in ra, chuyển tiếp cho Alice rồi dừng.
-    #      Nếu dh_reply: B -> k_bob = derive_aes_key(B^m2 mod p).
-    #      Gửi Alice dh_reply với "public": M1.
-    #   5. Nhận "data" của Alice: giải mã bằng k_alice, in nội dung đọc trộm được,
-    #      sửa nội dung (vd "100.000" -> "900.000"), mã hóa lại bằng k_bob, gửi Bob.
-    #   6. Nhận trả lời của Bob: giải mã bằng k_bob, mã hóa lại bằng k_alice, gửi Alice.
-    #   7. Đóng các kết nối.
-    raise NotImplementedError("TV3: run_mallory chưa cài đặt")
+    """Chặn trao đổi khóa DH giữa Alice và Bob, đọc và sửa tin nhắn.
+    Nếu Bob từ chối chữ ký thì chuyển lỗi về Alice và kết thúc."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind((HOST, listen_port))
+            server.listen(1)
+            print(f"[Mallory] Đang chờ Alice tại {HOST}:{listen_port}", flush=True)
+
+            alice_sock, _ = server.accept()
+            with alice_sock, alice_sock.makefile("r", encoding="utf-8") as alice_reader:
+                print("[Mallory] Alice đã kết nối.")
+                init = recv_msg(alice_reader)
+                if not isinstance(init, dict) or init.get("type") != "dh_init":
+                    raise ValueError("Alice không gửi thông điệp dh_init hợp lệ")
+
+                p, g, a_public = init["p"], init["g"], init["public"]
+                if not all(type(x) is int for x in (p, g, a_public)):
+                    raise ValueError("Các tham số p, g, public phải là số nguyên")
+                if p < 5 or not (2 <= g < p) or not (2 <= a_public <= p - 2):
+                    raise ValueError("Tham số Diffie-Hellman không hợp lệ")
+
+                # Mỗi đầu kết nối có một cặp khóa DH riêng của Mallory.
+                m1 = generate_private_key(p)
+                m1_public = compute_public_key(g, m1, p)
+                k_alice = derive_aes_key(compute_shared_secret(a_public, m1, p))
+
+                m2 = generate_private_key(p)
+                m2_public = compute_public_key(g, m2, p)
+
+                with socket.create_connection((HOST, bob_port)) as bob_sock:
+                    with bob_sock.makefile("r", encoding="utf-8") as bob_reader:
+                        print(f"[Mallory] Đã kết nối tới Bob tại {HOST}:{bob_port}")
+
+                        # Giữ nguyên chữ ký của Alice nếu có; Mallory không thể ký lại.
+                        # Vì trường public đã bị đổi, Bob sẽ phát hiện ở chế độ auth.
+                        fake_init = dict(init)
+                        fake_init["public"] = m2_public
+                        send_msg(bob_sock, fake_init)
+                        print("[Mallory] Đã thay khóa công khai Alice gửi cho Bob.")
+
+                        reply = recv_msg(bob_reader)
+                        if not isinstance(reply, dict):
+                            raise ValueError("Phản hồi của Bob không hợp lệ")
+                        if reply.get("type") == "error":
+                            print(f"[Mallory] Bob từ chối: {reply.get('reason', 'Không rõ lý do')}")
+                            send_msg(alice_sock, reply)
+                            return
+                        if reply.get("type") != "dh_reply":
+                            raise ValueError("Bob không gửi dh_reply")
+
+                        b_public = reply["public"]
+                        if type(b_public) is not int or not (2 <= b_public <= p - 2):
+                            raise ValueError("Khóa công khai của Bob không hợp lệ")
+                        k_bob = derive_aes_key(compute_shared_secret(b_public, m2, p))
+
+                        # Mallory đưa M1 cho Alice thay cho khóa B của Bob.
+                        fake_reply = dict(reply)
+                        fake_reply["public"] = m1_public
+                        send_msg(alice_sock, fake_reply)
+                        print("[Mallory] Đã thay khóa công khai Bob gửi cho Alice.")
+
+                        # Alice gửi dữ liệu được bảo vệ bằng khóa chung với Mallory.
+                        from_alice = recv_msg(alice_reader)
+                        if not isinstance(from_alice, dict):
+                            raise ValueError("Phản hồi của Alice không hợp lệ")
+                        if from_alice.get("type") == "error":
+                            print(f"[Mallory] Alice từ chối: {from_alice.get('reason', 'Không rõ lý do')}")
+                            send_msg(bob_sock, from_alice)
+                            return
+                        if from_alice.get("type") != "data":
+                            raise ValueError("Alice không gửi dữ liệu")
+
+                        original = decrypt_message(
+                            k_alice,
+                            bytes.fromhex(from_alice["nonce"]),
+                            bytes.fromhex(from_alice["ciphertext"]),
+                        )
+                        print(f"[Mallory] Đọc được tin Alice: {original}")
+
+                        # Nếu không có số tiền mẫu, vẫn sửa nội dung để thấy tác động MITM.
+                        if "100.000" in original:
+                            modified = original.replace("100.000", "900.000")
+                        else:
+                            modified = original + " [Mallory đã sửa nội dung]"
+                        print(f"[Mallory] Nội dung sau khi sửa: {modified}")
+
+                        nonce, ciphertext = encrypt_message(k_bob, modified)
+                        send_msg(bob_sock, {
+                            "type": "data",
+                            "nonce": nonce.hex(),
+                            "ciphertext": ciphertext.hex(),
+                        })
+
+                        # Bob trả lời bằng k_bob; Mallory mã hóa lại bằng k_alice.
+                        from_bob = recv_msg(bob_reader)
+                        if not isinstance(from_bob, dict):
+                            raise ValueError("Phản hồi dữ liệu của Bob không hợp lệ")
+                        if from_bob.get("type") == "error":
+                            print(f"[Mallory] Bob báo lỗi: {from_bob.get('reason', 'Không rõ lý do')}")
+                            send_msg(alice_sock, from_bob)
+                            return
+                        if from_bob.get("type") != "data":
+                            raise ValueError("Bob không gửi dữ liệu trả lời")
+
+                        bob_text = decrypt_message(
+                            k_bob,
+                            bytes.fromhex(from_bob["nonce"]),
+                            bytes.fromhex(from_bob["ciphertext"]),
+                        )
+                        print(f"[Mallory] Đọc được tin Bob: {bob_text}")
+                        nonce, ciphertext = encrypt_message(k_alice, bob_text)
+                        send_msg(alice_sock, {
+                            "type": "data",
+                            "nonce": nonce.hex(),
+                            "ciphertext": ciphertext.hex(),
+                        })
+                        print("[Mallory] Đã chuyển tiếp phản hồi cho Alice.")
+    except (OSError, ValueError, KeyError, TypeError, EOFError) as exc:
+        print(f"[Mallory] Lỗi: {exc}")
+    finally:
+        print("[Mallory] Kết thúc phiên kết nối.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Kẻ tấn công đứng giữa (Mallory)")
     parser.add_argument("--listen-port", type=int, default=MALLORY_PORT,
                         help="cổng Mallory chờ Alice kết nối")
-    parser.add_argument("--bob-port", type=int, default=BOB_PORT, help="cổng của Bob")
+    parser.add_argument("--bob-port", type=int, default=BOB_PORT,
+                        help="cổng của Bob")
     args = parser.parse_args()
     run_mallory(listen_port=args.listen_port, bob_port=args.bob_port)
