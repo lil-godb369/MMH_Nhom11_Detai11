@@ -33,7 +33,7 @@ def run_alice(port: int = BOB_PORT, auth: bool = False, bits: int = 512,
             send_msg(sock, init)
             reply = recv_msg(reader)
             if reply.get("type") == "error":
-                print(f"[Alice] {reply.get('reason', 'Bob từ chối kết nối')}")
+                log_step("Alice", "KẾT NỐI BỊ TỪ CHỐI", reply.get("reason", "Bob từ chối kết nối"))
                 return
             if reply.get("type") != "dh_reply":
                 raise ValueError("Alice chờ dh_reply nhưng nhận loại tin khác")

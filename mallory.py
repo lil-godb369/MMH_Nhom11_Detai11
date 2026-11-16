@@ -10,7 +10,7 @@ Chạy riêng: python mallory.py [--listen-port 5001] [--bob-port 5000]
 import argparse
 import socket
 
-from channel import HOST, BOB_PORT, MALLORY_PORT, send_msg, recv_msg
+from channel import HOST, BOB_PORT, MALLORY_PORT, send_msg, recv_msg, log_step
 from dh_protocol import (
     generate_private_key,
     compute_public_key,
@@ -29,11 +29,11 @@ def run_mallory(listen_port: int = MALLORY_PORT, bob_port: int = BOB_PORT) -> No
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server.bind((HOST, listen_port))
             server.listen(1)
-            print(f"[Mallory] Đang chờ Alice tại {HOST}:{listen_port}", flush=True)
+            log_step("Mallory", f"Đang chờ Alice tại {HOST}:{listen_port}")
 
             alice_sock, _ = server.accept()
             with alice_sock, alice_sock.makefile("r", encoding="utf-8") as alice_reader:
-                print("[Mallory] Alice đã kết nối.")
+                log_step("Mallory", "Alice đã kết nối.")
                 init = recv_msg(alice_reader)
                 if not isinstance(init, dict) or init.get("type") != "dh_init":
                     raise ValueError("Alice không gửi thông điệp dh_init hợp lệ")
@@ -54,20 +54,20 @@ def run_mallory(listen_port: int = MALLORY_PORT, bob_port: int = BOB_PORT) -> No
 
                 with socket.create_connection((HOST, bob_port)) as bob_sock:
                     with bob_sock.makefile("r", encoding="utf-8") as bob_reader:
-                        print(f"[Mallory] Đã kết nối tới Bob tại {HOST}:{bob_port}")
+                        log_step("Mallory", f"Đã kết nối tới Bob tại {HOST}:{bob_port}")
 
                         # Giữ nguyên chữ ký của Alice nếu có; Mallory không thể ký lại.
                         # Vì trường public đã bị đổi, Bob sẽ phát hiện ở chế độ auth.
                         fake_init = dict(init)
                         fake_init["public"] = m2_public
                         send_msg(bob_sock, fake_init)
-                        print("[Mallory] Đã thay khóa công khai Alice gửi cho Bob.")
+                        log_step("Mallory", "Đã thay khóa công khai Alice gửi cho Bob.")
 
                         reply = recv_msg(bob_reader)
                         if not isinstance(reply, dict):
                             raise ValueError("Phản hồi của Bob không hợp lệ")
                         if reply.get("type") == "error":
-                            print(f"[Mallory] Bob từ chối: {reply.get('reason', 'Không rõ lý do')}")
+                            log_step("Mallory", f"Bob từ chối: {reply.get('reason', 'Không rõ lý do')}")
                             send_msg(alice_sock, reply)
                             return
                         if reply.get("type") != "dh_reply":
@@ -82,14 +82,14 @@ def run_mallory(listen_port: int = MALLORY_PORT, bob_port: int = BOB_PORT) -> No
                         fake_reply = dict(reply)
                         fake_reply["public"] = m1_public
                         send_msg(alice_sock, fake_reply)
-                        print("[Mallory] Đã thay khóa công khai Bob gửi cho Alice.")
+                        log_step("Mallory", "Đã thay khóa công khai Bob gửi cho Alice.")
 
                         # Alice gửi dữ liệu được bảo vệ bằng khóa chung với Mallory.
                         from_alice = recv_msg(alice_reader)
                         if not isinstance(from_alice, dict):
                             raise ValueError("Phản hồi của Alice không hợp lệ")
                         if from_alice.get("type") == "error":
-                            print(f"[Mallory] Alice từ chối: {from_alice.get('reason', 'Không rõ lý do')}")
+                            log_step("Mallory", f"Alice từ chối: {from_alice.get('reason', 'Không rõ lý do')}")
                             send_msg(bob_sock, from_alice)
                             return
                         if from_alice.get("type") != "data":
@@ -100,14 +100,14 @@ def run_mallory(listen_port: int = MALLORY_PORT, bob_port: int = BOB_PORT) -> No
                             bytes.fromhex(from_alice["nonce"]),
                             bytes.fromhex(from_alice["ciphertext"]),
                         )
-                        print(f"[Mallory] Đọc được tin Alice: {original}")
+                        log_step("Mallory", f"Đọc được tin Alice: {original}")
 
                         # Nếu không có số tiền mẫu, vẫn sửa nội dung để thấy tác động MITM.
                         if "100.000" in original:
                             modified = original.replace("100.000", "900.000")
                         else:
                             modified = original + " [Mallory đã sửa nội dung]"
-                        print(f"[Mallory] Nội dung sau khi sửa: {modified}")
+                        log_step("Mallory", f"Nội dung sau khi sửa: {modified}")
 
                         nonce, ciphertext = encrypt_message(k_bob, modified)
                         send_msg(bob_sock, {
@@ -121,7 +121,7 @@ def run_mallory(listen_port: int = MALLORY_PORT, bob_port: int = BOB_PORT) -> No
                         if not isinstance(from_bob, dict):
                             raise ValueError("Phản hồi dữ liệu của Bob không hợp lệ")
                         if from_bob.get("type") == "error":
-                            print(f"[Mallory] Bob báo lỗi: {from_bob.get('reason', 'Không rõ lý do')}")
+                            log_step("Mallory", f"Bob báo lỗi: {from_bob.get('reason', 'Không rõ lý do')}")
                             send_msg(alice_sock, from_bob)
                             return
                         if from_bob.get("type") != "data":
@@ -132,18 +132,18 @@ def run_mallory(listen_port: int = MALLORY_PORT, bob_port: int = BOB_PORT) -> No
                             bytes.fromhex(from_bob["nonce"]),
                             bytes.fromhex(from_bob["ciphertext"]),
                         )
-                        print(f"[Mallory] Đọc được tin Bob: {bob_text}")
+                        log_step("Mallory", f"Đọc được tin Bob: {bob_text}")
                         nonce, ciphertext = encrypt_message(k_alice, bob_text)
                         send_msg(alice_sock, {
                             "type": "data",
                             "nonce": nonce.hex(),
                             "ciphertext": ciphertext.hex(),
                         })
-                        print("[Mallory] Đã chuyển tiếp phản hồi cho Alice.")
+                        log_step("Mallory", "Đã chuyển tiếp phản hồi cho Alice.")
     except (OSError, ValueError, KeyError, TypeError, EOFError) as exc:
-        print(f"[Mallory] Lỗi: {exc}")
+        log_step("Mallory", f"Lỗi: {exc}")
     finally:
-        print("[Mallory] Kết thúc phiên kết nối.")
+        log_step("Mallory", "Kết thúc phiên kết nối.")
 
 
 if __name__ == "__main__":

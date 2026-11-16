@@ -131,6 +131,9 @@ def run_benchmark(bits_list=(512, 1024, 2048), runs: int = 20) -> list[dict]:
 
 
 if __name__ == "__main__":
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):   # Windows: tránh lỗi cp1252 khi lưu output ra file
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Đo thời gian Diffie-Hellman theo độ dài p")
     parser.add_argument("--runs", type=int, default=20, help="số lần lặp cho mỗi độ dài")
     parser.add_argument("--bits", type=int, nargs="+", default=[512, 1024, 2048],

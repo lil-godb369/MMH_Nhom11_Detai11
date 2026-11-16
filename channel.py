@@ -2,8 +2,15 @@
 
 import json
 import socket
+import sys
 import threading
 from contextlib import closing
+
+# Windows: khi chuyển output ra file/pipe (vd lưu log làm báo cáo) Python mặc định dùng cp1252
+# và báo UnicodeEncodeError với tiếng Việt -> ép stdout/stderr sang UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
 
 HOST = "127.0.0.1"
 BOB_PORT = 5000
@@ -59,8 +66,8 @@ def send_msg(sock, msg: dict) -> None:
     if not isinstance(msg, dict):
         raise ValueError("Tin nhắn phải là một đối tượng JSON (dict)")
     line = json.dumps(msg, ensure_ascii=False) + "\n"
+    _display_wire(msg)  # in trước khi gửi để log luôn đúng thứ tự gửi -> nhận
     sock.sendall(line.encode("utf-8"))
-    _display_wire(msg)
 
 
 def recv_msg(reader) -> dict:

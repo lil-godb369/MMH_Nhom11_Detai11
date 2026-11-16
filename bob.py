@@ -68,7 +68,7 @@ def run_bob(port: int = BOB_PORT, auth: bool = False) -> None:
                     })
                 except (ValueError, KeyError, TypeError) as exc:
                     reason = str(exc)
-                    print(f"[Bob] {reason}")
+                    log_step("Bob", "TỪ CHỐI KẾT NỐI", reason)
                     try:
                         send_msg(conn, {"type": "error", "reason": reason})
                     except OSError:
