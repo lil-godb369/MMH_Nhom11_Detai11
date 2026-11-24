@@ -41,18 +41,23 @@ def run_alice(port: int = BOB_PORT, auth: bool = False, bits: int = 512,
             if not is_valid_public_key(public_b, p):
                 raise ValueError("Khóa công khai của Bob không hợp lệ")
             if auth:
+                reason = None
                 try:
                     signature = bytes.fromhex(reply["signature"])
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise ValueError("Phát hiện MITM: chữ ký Bob bị thiếu hoặc sai định dạng") from exc
-                if not verify_dh_public(
-                    load_public_key("bob"), p, g, public_b, signature
-                ):
-                    raise ValueError("Phát hiện MITM: chữ ký khóa DH của Bob không hợp lệ")
+                except (KeyError, TypeError, ValueError):
+                    reason = "Phát hiện MITM: chữ ký Bob bị thiếu hoặc sai định dạng"
+                else:
+                    if not verify_dh_public(load_public_key("bob"), p, g, public_b, signature):
+                        reason = "Phát hiện MITM: chữ ký khóa DH của Bob không hợp lệ"
+                if reason:
+                    # Báo cho bên kia rồi dừng; đây là kết quả mong đợi, không phải lỗi chương trình.
+                    log_step("Alice", "PHÁT HIỆN MITM – HỦY PHIÊN", reason)
+                    send_msg(sock, {"type": "error", "reason": reason})
+                    return
 
             log_step("Alice", "03 | NHẬN KHÓA CÔNG KHAI CỦA BOB")
             shared = compute_shared_secret(public_b, private_a, p)
-            key = derive_aes_key(shared)
+            key = derive_aes_key(shared, p)
             log_step("Alice", "04 | TẠO KHÓA PHIÊN AES-256", "Đã tính khóa chung Diffie–Hellman")
             nonce, ciphertext = encrypt_message(key, message)
             log_step("Alice", "05 | GỬI TIN NHẮN ĐÃ MÃ HÓA", f"Bản rõ: {message}")

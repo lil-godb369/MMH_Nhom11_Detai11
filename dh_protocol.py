@@ -15,9 +15,28 @@ import secrets
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from dh_math import mod_pow
+from dh_math import mod_pow, is_probable_prime, RFC2409_GROUP2_P, RFC3526_GROUP14_P
 
 NONCE_SIZE = 12  # byte, độ dài nonce chuẩn của AES-GCM
+MIN_P_BITS = 512  # độ dài p tối thiểu bên nhận chấp nhận
+
+# Các p đã biết chắc là số nguyên tố an toàn (hằng số RFC) -> bỏ qua Miller–Rabin.
+# Kiểm tra p 2048 bit bằng Miller–Rabin tự viết mất khoảng 2 giây, quá chậm cho mỗi lần bắt tay.
+_KNOWN_SAFE_PRIMES = frozenset((RFC2409_GROUP2_P, RFC3526_GROUP14_P))
+
+
+def is_valid_params(p: int, g: int, min_bits: int = MIN_P_BITS) -> bool:
+    """Kiểm tra tham số DH nhận được: p là số nguyên tố an toàn ≥ min_bits bit, 2 ≤ g ≤ p − 2, g² mod p ≠ 1."""
+    # Chặn kẻ gian gửi p nhỏ / p hợp số / p − 1 nhiều ước nhỏ (tấn công nhóm con nhỏ).
+    for x in (p, g):
+        if not isinstance(x, int) or isinstance(x, bool):
+            return False
+    if p.bit_length() < min_bits or not 2 <= g <= p - 2:
+        return False
+    if p not in _KNOWN_SAFE_PRIMES:
+        if not (is_probable_prime(p) and is_probable_prime((p - 1) // 2)):
+            return False
+    return mod_pow(g, 2, p) != 1
 
 
 def generate_private_key(p: int) -> int:
@@ -45,9 +64,11 @@ def is_valid_public_key(value: int, p: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 2 <= value <= p - 2
 
 
-def derive_aes_key(shared_secret: int) -> bytes:
-    """Băm khóa chung bằng SHA-256, ra khóa AES-256 (32 byte)."""
-    length = max(1, (shared_secret.bit_length() + 7) // 8)
+def derive_aes_key(shared_secret: int, p: int) -> bytes:
+    """Băm khóa chung bằng SHA-256, ra khóa AES-256 (32 byte).
+    Khóa chung đổi sang bytes dài cố định bằng độ dài byte của p (NIST SP 800-56A)."""
+    # Độ dài cố định: khóa chung có byte đầu bằng 0 vẫn ra cùng chuỗi bytes ở hai bên.
+    length = (p.bit_length() + 7) // 8
     return hashlib.sha256(shared_secret.to_bytes(length, "big")).digest()
 
 
@@ -87,7 +108,7 @@ if __name__ == "__main__":
         s_alice = compute_shared_secret(B, a, p)
         s_bob = compute_shared_secret(A, b, p)
         assert s_alice == s_bob
-        key_alice, key_bob = derive_aes_key(s_alice), derive_aes_key(s_bob)
+        key_alice, key_bob = derive_aes_key(s_alice, p), derive_aes_key(s_bob, p)
         assert key_alice == key_bob and len(key_alice) == 32
         print(f"[OK] p {bits} bit: Alice và Bob ra cùng khóa AES {key_alice.hex()[:16]}...")
 
@@ -124,5 +145,42 @@ if __name__ == "__main__":
         print("[OK] Chặn khóa công khai bất thường (0, 1, p − 1, p...)")
     else:
         raise AssertionError("compute_shared_secret chấp nhận khóa công khai = 1")
+
+    # derive_aes_key: khóa chung đổi sang bytes dài cố định bằng độ dài byte của p
+    p_len = (p.bit_length() + 7) // 8
+    assert derive_aes_key(5, p) == hashlib.sha256((5).to_bytes(p_len, "big")).digest()
+    assert derive_aes_key(5, p) != hashlib.sha256(b"\x05").digest()
+    print(f"[OK] derive_aes_key dùng độ dài cố định {p_len} byte (theo p), kể cả khi khóa chung nhỏ")
+
+    # is_valid_params: nhận nhóm RFC và p tự sinh, chặn p yếu / g yếu
+    import time
+    from dh_math import generate_safe_prime, RFC_GENERATOR
+
+    for p_ok in (RFC2409_GROUP2_P, RFC3526_GROUP14_P):
+        t = time.perf_counter()
+        assert is_valid_params(p_ok, RFC_GENERATOR)
+        print(f"[OK] is_valid_params nhận nhóm RFC {p_ok.bit_length()} bit "
+              f"trong {time.perf_counter() - t:.4f} giây")
+    p512, g512 = get_params(512)
+    t = time.perf_counter()
+    assert is_valid_params(p512, g512)
+    print(f"[OK] is_valid_params nhận p 512 bit tự sinh trong {time.perf_counter() - t:.3f} giây")
+
+    p_small = generate_safe_prime(256)                 # an toàn nhưng quá ngắn
+    assert not is_valid_params(p_small, 2)
+    assert is_valid_params(p_small, 2, min_bits=256)
+    not_safe = p512 + 2                                # số nguyên tố 512 bit nhưng (p − 1)/2 là hợp số
+    while not (is_probable_prime(not_safe) and not is_probable_prime((not_safe - 1) // 2)):
+        not_safe += 2
+    composite = p512 + 2                               # hợp số lẻ 512 bit
+    while is_probable_prime(composite):
+        composite += 2
+    for bad_p in (not_safe, composite):
+        assert bad_p.bit_length() == 512 and not is_valid_params(bad_p, 2)
+    for bad_g in (0, 1, p512 - 1, p512, -2, True):
+        assert not is_valid_params(p512, bad_g)
+    for bad_p in (True, 23, "123", None, float(p512)):
+        assert not is_valid_params(bad_p, 2)
+    print("[OK] is_valid_params chặn p quá ngắn, p không phải số nguyên tố an toàn, g = 0, 1, p − 1, bool...")
 
     print("Tất cả kiểm thử đều qua.")

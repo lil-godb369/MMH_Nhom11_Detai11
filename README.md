@@ -2,8 +2,6 @@
 
 Cài đặt giao thức trao đổi khóa Diffie-Hellman giữa hai bên trên kênh truyền công khai, mô phỏng tấn công người đứng giữa (MITM) khi không có xác thực, và chặn MITM bằng chữ ký số.
 
-> **Bản đề xuất.** Cả nhóm chốt lại trong buổi họp đầu tiên (trước 3/11). Nhóm đổi gì thì sửa thẳng vào file này để mọi người cùng theo.
-
 ## 1. Thành viên
 
 | Thành viên | Họ tên | File phụ trách |
@@ -30,7 +28,7 @@ MMH_Nhom11_Detai11/
 ├── .gitignore
 ├── dh_math.py        TV1  Hàm toán học: lũy thừa modulo, Miller–Rabin, sinh p, tìm g
 ├── dh_protocol.py    TV1  Sinh khóa, tính khóa chung, tạo khóa AES, mã hóa tin nhắn
-├── main.py           TV1  Chạy 3 kịch bản: normal, mitm, auth
+├── main.py           TV1  Chạy 4 kịch bản: normal, mitm, auth, auth-alice
 ├── channel.py        TV2  Gửi/nhận tin nhắn qua socket, in ra những gì kẻ nghe lén thấy
 ├── alice.py          TV2  Bên Alice (client)
 ├── bob.py            TV2  Bên Bob (server)
@@ -62,13 +60,18 @@ Mỗi tin nhắn là **một dòng JSON**, kết thúc bằng ký tự xuống d
 
 Ở chế độ có xác thực (`auth=True`), tin nhắn bước 1 và 2 có thêm trường `"signature": "<hex>"`. Giả định Alice và Bob đã có sẵn khóa công khai RSA của nhau từ trước, giống như chứng chỉ.
 
-**Kết quả mong đợi của 3 kịch bản:**
+**Kết quả mong đợi của 4 kịch bản:**
 
 | Kịch bản | Kết quả |
 | --- | --- |
 | `normal` | Alice và Bob tính ra cùng một khóa, Bob đọc đúng tin nhắn |
 | `mitm` | Mallory đọc được tin nhắn và sửa nội dung (vd: 100.000đ → 900.000đ); Bob nhận tin đã bị sửa mà không biết |
 | `auth` | Mallory vẫn chen vào giữa nhưng không làm giả được chữ ký; Bob báo "Phát hiện MITM" và ngắt kết nối |
+| `auth-alice` | Mallory chuyển nguyên `dh_init`, chỉ thay khóa trong `dh_reply` của Bob; Bob chấp nhận Alice, còn Alice thấy chữ ký Bob sai, báo "Phát hiện MITM", gửi `error` cho bên kia rồi hủy phiên |
+
+Thêm cờ `--forge` (với `mitm`, `auth`, `auth-alice`): Mallory tự ký khóa giả bằng khóa RSA `mallory` của mình (sinh nếu chưa có) thay vì giữ chữ ký cũ. Kết quả vẫn như trên vì Alice/Bob xác minh bằng khóa công khai của nhau, không phải của Mallory.
+
+Bên nhận `dh_init` (Bob, Mallory) kiểm tra tham số bằng `is_valid_params`: p phải là số nguyên tố an toàn dài ít nhất 512 bit nên `--bits` nhỏ hơn 512 sẽ bị Bob từ chối.
 
 ## 5. Tên hàm dùng chung
 
@@ -90,7 +93,8 @@ Mỗi tin nhắn là **một dòng JSON**, kết thúc bằng ký tự xuống d
 | `compute_public_key(g, private_key, p)` | `int` | Tính g^a mod p |
 | `compute_shared_secret(other_public, private_key, p)` | `int` | Tính B^a mod p |
 | `is_valid_public_key(value, p)` | `bool` | Kiểm tra 2 ≤ value ≤ p − 2, chặn khóa công khai bất thường |
-| `derive_aes_key(shared_secret)` | `bytes` (32 byte) | Băm khóa chung bằng SHA-256 ra khóa AES-256 |
+| `is_valid_params(p, g, min_bits=512)` | `bool` | p, g là `int` (không phải `bool`), p ≥ `min_bits` bit, p và (p − 1)/2 đều nguyên tố (nhóm RFC có sẵn thì bỏ qua Miller–Rabin), 2 ≤ g ≤ p − 2, g² mod p ≠ 1 |
+| `derive_aes_key(shared_secret, p)` | `bytes` (32 byte) | Đổi khóa chung sang bytes dài cố định bằng độ dài byte của p (NIST SP 800-56A), băm SHA-256 ra khóa AES-256 |
 | `encrypt_message(key, plaintext)` | `(nonce, ciphertext)` | Mã hóa AES-256-GCM, nonce 12 byte ngẫu nhiên |
 | `decrypt_message(key, nonce, ciphertext)` | `str` | Giải mã; báo lỗi nếu tin nhắn bị sửa trên đường truyền |
 
@@ -106,14 +110,14 @@ Mỗi tin nhắn là **một dòng JSON**, kết thúc bằng ký tự xuống d
 
 | Hàm | Việc làm |
 | --- | --- |
-| `run_alice(port=BOB_PORT, auth=False, bits=512, message="...")` | Kết nối, gửi `dh_init`, nhận `dh_reply`, gửi tin nhắn đã mã hóa, nhận tin trả lời |
-| `run_bob(port=BOB_PORT, auth=False)` | Chờ một kết nối, gửi `dh_reply`, giải mã tin nhắn, gửi tin trả lời |
+| `run_alice(port=BOB_PORT, auth=False, bits=512, message="...")` | Kết nối, gửi `dh_init`, nhận `dh_reply`, gửi tin nhắn đã mã hóa, nhận tin trả lời. Có xác thực mà chữ ký Bob sai thì gửi `error`, log "Phát hiện MITM" rồi dừng |
+| `run_bob(port=BOB_PORT, auth=False)` | Chờ một kết nối, kiểm tra `is_valid_params`, gửi `dh_reply`, giải mã tin nhắn, gửi tin trả lời. Nhận `error` thay cho `data` thì log và dừng |
 
 ### `mallory.py` – TV3
 
 | Hàm | Việc làm |
 | --- | --- |
-| `run_mallory(listen_port=MALLORY_PORT, bob_port=BOB_PORT)` | Nhận kết nối của Alice, tự kết nối tới Bob, thay khóa công khai của hai bên bằng khóa của Mallory, đọc và sửa tin nhắn rồi chuyển tiếp |
+| `run_mallory(listen_port=MALLORY_PORT, bob_port=BOB_PORT, mode="both", forge=False)` | Nhận kết nối của Alice, tự kết nối tới Bob, thay khóa công khai bằng khóa của Mallory, đọc và sửa tin nhắn rồi chuyển tiếp. `mode="both"`: thay cả hai chiều; `mode="bob-only"`: chuyển nguyên `dh_init`, chỉ thay khóa trong `dh_reply`. `forge=True`: tự ký khóa giả bằng khóa RSA `mallory` |
 
 ### `dh_auth.py` – TV4
 
@@ -140,21 +144,26 @@ Mỗi tin nhắn là **một dòng JSON**, kết thúc bằng ký tự xuống d
 - Luôn `git pull` trước khi sửa code; chỉ sửa file của mình.
 - Thư mục `keys/` chứa khóa riêng, không đẩy lên repo (đã thêm vào `.gitignore`).
 
-## 7. Cách chạy (dự kiến)
+## 7. Cách chạy
+
+Trên Windows dùng `py -3.14` thay cho `python` (vd `py -3.14 main.py normal`).
 
 ```
 pip install -r requirements.txt
 
-python main.py normal     # Trao đổi khóa bình thường
-python main.py mitm       # Bị MITM, không có xác thực
-python main.py auth       # Bị MITM, có xác thực -> phát hiện
-python benchmark.py       # Đo thời gian
+python main.py normal             # Trao đổi khóa bình thường
+python main.py mitm               # Bị MITM, không có xác thực
+python main.py auth               # Bị MITM, có xác thực -> Bob phát hiện
+python main.py auth-alice         # Mallory chỉ thay khóa của Bob, có xác thực -> Alice phát hiện
+python main.py auth --forge       # Mallory tự ký khóa giả bằng khóa RSA của mình -> vẫn bị phát hiện
+python main.py normal --bits 2048 # Đổi độ dài p (mặc định 512, tối thiểu 512)
+python benchmark.py               # Đo thời gian
 ```
 
 Khi demo, có thể chạy mỗi bên trong một cửa sổ riêng để thầy cô thấy rõ log của từng bên:
 
 ```
 python bob.py [--auth]
-python mallory.py
+python mallory.py [--mode both|bob-only] [--forge]
 python alice.py --port 5001 [--auth]
 ```

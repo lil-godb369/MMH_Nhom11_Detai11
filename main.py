@@ -4,9 +4,11 @@ Chạy 3 kịch bản demo trong một chương trình, mỗi bên chạy trong 
 
     python main.py normal     Trao đổi khóa bình thường
     python main.py mitm       Bị MITM, không có xác thực
-    python main.py auth       Bị MITM, có xác thực -> phát hiện
+    python main.py auth       Bị MITM, có xác thực -> Bob phát hiện
+    python main.py auth-alice Mallory chỉ thay khóa của Bob, có xác thực -> Alice phát hiện
 
-Tùy chọn: --bits 512|1024|2048, --message "..."
+Tùy chọn: --bits 512|1024|2048, --message "...",
+          --forge (Mallory tự ký khóa giả bằng khóa RSA của mình thay vì giữ chữ ký cũ)
 """
 
 import argparse
@@ -63,12 +65,14 @@ def ensure_signing_keys() -> None:
             generate_signing_keys(name)
 
 
-def run_scenario(alice_port: int, auth: bool, with_mallory: bool, bits: int, message: str) -> None:
+def run_scenario(alice_port: int, auth: bool, with_mallory: bool, bits: int, message: str,
+                 mallory_mode: str = "both", forge: bool = False) -> None:
     """Khởi động Bob (và Mallory nếu có) trong luồng riêng, rồi chạy Alice ở luồng chính."""
     threads = [start_in_thread("Bob", run_bob, port=BOB_PORT, auth=auth)]
     if with_mallory:
         threads.append(start_in_thread("Mallory", run_mallory,
-                                       listen_port=MALLORY_PORT, bob_port=BOB_PORT))
+                                       listen_port=MALLORY_PORT, bob_port=BOB_PORT,
+                                       mode=mallory_mode, forge=forge))
     time.sleep(SERVER_START_DELAY)
 
     alice_ok = True
@@ -86,32 +90,44 @@ def run_scenario(alice_port: int, auth: bool, with_mallory: bool, bits: int, mes
             print(f"[main] Cảnh báo: {thread.name} chưa kết thúc sau {timeout} giây")
 
 
-def scenario_normal(bits: int, message: str) -> None:
+def scenario_normal(bits: int, message: str, forge: bool = False) -> None:
     """Alice nói chuyện thẳng với Bob (cổng 5000)."""
     print_banner("normal – Alice nói chuyện thẳng với Bob",
                  "Alice và Bob tính ra cùng một khóa, Bob đọc đúng tin nhắn")
     run_scenario(alice_port=BOB_PORT, auth=False, with_mallory=False, bits=bits, message=message)
 
 
-def scenario_mitm(bits: int, message: str) -> None:
+def scenario_mitm(bits: int, message: str, forge: bool = False) -> None:
     """Alice -> Mallory (5001) -> Bob (5000), không có xác thực."""
     print_banner("mitm – Mallory đứng giữa, KHÔNG có xác thực",
                  "Mallory đọc và sửa được tin nhắn, Bob nhận tin đã bị sửa mà không biết")
-    run_scenario(alice_port=MALLORY_PORT, auth=False, with_mallory=True, bits=bits, message=message)
+    run_scenario(alice_port=MALLORY_PORT, auth=False, with_mallory=True, bits=bits, message=message,
+                 forge=forge)
 
 
-def scenario_auth(bits: int, message: str) -> None:
+def scenario_auth(bits: int, message: str, forge: bool = False) -> None:
     """Như mitm nhưng bật chữ ký RSA: Bob phải phát hiện MITM."""
     print_banner("auth – Mallory đứng giữa, CÓ xác thực bằng chữ ký RSA",
                  "Mallory không làm giả được chữ ký, Bob báo \"Phát hiện MITM\" và ngắt kết nối")
     ensure_signing_keys()
-    run_scenario(alice_port=MALLORY_PORT, auth=True, with_mallory=True, bits=bits, message=message)
+    run_scenario(alice_port=MALLORY_PORT, auth=True, with_mallory=True, bits=bits, message=message,
+                 forge=forge)
+
+
+def scenario_auth_alice(bits: int, message: str, forge: bool = False) -> None:
+    """Mallory chuyển nguyên dh_init, chỉ thay khóa của Bob: Alice phải tự phát hiện MITM."""
+    print_banner("auth-alice – Mallory chỉ thay khóa của Bob, CÓ xác thực bằng chữ ký RSA",
+                 "Bob nhận đúng khóa của Alice; Alice thấy chữ ký Bob sai, báo \"Phát hiện MITM\" và hủy phiên")
+    ensure_signing_keys()
+    run_scenario(alice_port=MALLORY_PORT, auth=True, with_mallory=True, bits=bits, message=message,
+                 mallory_mode="bob-only", forge=forge)
 
 
 SCENARIOS = {
     "normal": scenario_normal,
     "mitm": scenario_mitm,
     "auth": scenario_auth,
+    "auth-alice": scenario_auth_alice,
 }
 
 
@@ -120,9 +136,11 @@ def main() -> None:
     parser.add_argument("scenario", choices=SCENARIOS.keys(), help="kịch bản cần chạy")
     parser.add_argument("--bits", type=int, default=512, help="độ dài p (bit), mặc định 512")
     parser.add_argument("--message", default=DEFAULT_MESSAGE, help="tin nhắn Alice gửi cho Bob")
+    parser.add_argument("--forge", action="store_true",
+                        help="Mallory tự ký khóa giả bằng khóa RSA của mình thay vì giữ chữ ký cũ")
     args = parser.parse_args()
 
-    SCENARIOS[args.scenario](args.bits, args.message)
+    SCENARIOS[args.scenario](args.bits, args.message, forge=args.forge)
 
     print("\n" + "-" * 70)
     if _errors:

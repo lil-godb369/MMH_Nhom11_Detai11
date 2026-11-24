@@ -5,7 +5,7 @@ import socket
 from channel import HOST, BOB_PORT, send_msg, recv_msg, log_step
 from dh_protocol import (
     generate_private_key, compute_public_key, compute_shared_secret,
-    is_valid_public_key, derive_aes_key, encrypt_message, decrypt_message,
+    is_valid_public_key, is_valid_params, derive_aes_key, encrypt_message, decrypt_message,
 )
 from dh_auth import load_private_key, load_public_key, sign_dh_public, verify_dh_public
 
@@ -26,10 +26,9 @@ def run_bob(port: int = BOB_PORT, auth: bool = False) -> None:
                     if init.get("type") != "dh_init":
                         raise ValueError("Bob chờ dh_init nhưng nhận loại tin khác")
                     p, g, public_a = init["p"], init["g"], init["public"]
-                    if (not isinstance(p, int) or isinstance(p, bool)
-                            or not isinstance(g, int) or isinstance(g, bool)
-                            or p < 5 or not 2 <= g <= p - 2):
-                        raise ValueError("Tham số DH p hoặc g không hợp lệ")
+                    if not is_valid_params(p, g):
+                        raise ValueError("Tham số DH p hoặc g không hợp lệ "
+                                         "(p phải là số nguyên tố an toàn ≥ 512 bit, 2 ≤ g ≤ p − 2)")
                     if not is_valid_public_key(public_a, p):
                         raise ValueError("Khóa công khai của Alice không hợp lệ")
                     if auth:
@@ -51,9 +50,13 @@ def run_bob(port: int = BOB_PORT, auth: bool = False) -> None:
                         ).hex()
                     log_step("Bob", "03 | GỬI KHÓA CÔNG KHAI DH")
                     send_msg(conn, reply)
-                    key = derive_aes_key(compute_shared_secret(public_a, private_b, p))
+                    key = derive_aes_key(compute_shared_secret(public_a, private_b, p), p)
                     log_step("Bob", "04 | TẠO KHÓA PHIÊN AES-256", "Đã tính khóa chung Diffie–Hellman")
                     incoming = recv_msg(reader)
+                    if incoming.get("type") == "error":
+                        # Alice tự phát hiện MITM (chữ ký khóa DH sai) và hủy phiên.
+                        log_step("Bob", "ALICE HỦY PHIÊN", incoming.get("reason", "Không rõ lý do"))
+                        return
                     if incoming.get("type") != "data":
                         raise ValueError("Bob chờ data nhưng nhận loại tin khác")
                     plaintext = decrypt_message(
