@@ -167,3 +167,5 @@ python bob.py [--auth]
 python mallory.py [--mode both|bob-only] [--forge]
 python alice.py --port 5001 [--auth]
 ```
+
+Nếu chạy riêng với `--auth` mà chưa có thư mục `keys/` (vd mới tải về), chạy `python dh_auth.py` một lần để sinh khóa RSA. `main.py` tự sinh khóa nên không cần bước này. Mở Bob trước, rồi Mallory (nếu demo MITM), cuối cùng là Alice; bỏ `--port 5001` nếu Alice nói chuyện thẳng với Bob.

@@ -157,4 +157,7 @@ def _self_test() -> None:
 
 
 if __name__ == "__main__":
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):   # Windows: tránh lỗi cp1252 khi lưu output ra file
+        sys.stdout.reconfigure(encoding="utf-8")
     _self_test()
